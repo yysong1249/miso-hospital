@@ -41,12 +41,12 @@ chatbot-service/ (FastAPI, 8000) ── SQLite(chatbot_logs.db, 감사용)
 | 예약(reservations) | `reservation.html` (전체화면 챗봇 상담형) | `was/routes/reservations.js` | ✅ 정상 (2026-09-08 프론트 추가됨) — 운영시간·공휴일 검증 + 같은 시간대 정원(2명) 제한 둘 다 적용 |
 | 휴진일 관리(holidays) | `admin-holidays.html` (관리자 전용) | `was/routes/holidays.js` | ✅ 정상 (2026-09-08 신규) — 조회는 로그인 사용자 누구나, 등록/삭제는 admin만 |
 | 계정 관리(accounts) | `admin-accounts.html` | `was/routes/accounts.js` | ✅ 정상 (2026-09-09 프론트 추가됨) — "환자 등록"은 staff/admin 둘 다, "전체 계정 목록 + 역할 변경"은 admin 전용으로 화면 안에서 섹션을 나눠 표시. curl로 staff(등록 200/목록 403), admin(등록·목록·역할변경 200), 본인 강등 차단(400) 전부 재확인 |
-| **감사 로그 조회(audit-log)** | ❌ 없음 | `was/routes/auditLog.js` | ⚠️ **백엔드만 존재.** 로그인 성공/실패, 역할 변경 등은 실제로 기록되고 있으나(`was/audit.js`) 조회 화면이 없어서 DB를 직접 봐야 함 |
+| 감사 로그 조회(audit-log) | `admin-audit-dashboard.html` | `was/routes/auditLog.js` + `chatbot-service/audit_summary.py` | ✅ 정상 (2026-09-11 팀원 커밋으로 프론트 추가됨, 갱신 2026-09-15) — 위험도 트랙 + PII 스캔 트랙 KPI 타일, 전체 이력 필터·페이지네이션, 10초 자동 새로고침. 더 이상 "백엔드만 존재"가 아님 |
 | 문의 답변(board:reply) | `admin-board.html` (staff/admin), `view.html`/`board.html`에 답변 표시 | `was/routes/board.js`의 `PATCH /:id/answer` | ✅ 정상 (2026-09-08 프론트 추가됨, 팀원 `Sunjung Hwang` 커밋 `5bbf361`) — `view.js`가 `p.answer` 존재 시 "병원 답변" 박스로 렌더링 확인 |
 | 예약 관리(reservations:manage) | `admin-reservations.html` (staff/admin) | `was/routes/reservations.js`의 `PATCH /:id/status` | ✅ 정상 (2026-09-08 프론트 추가됨, 동일 커밋) — 승인/취소 화면 |
 | staff(원무/접수) 역할 전용 화면 | `admin-board.html`, `admin-reservations.html` | RBAC 권한 (`reservations:manage`, `board:reply`, `records:view:masked`, `patients:register`) | ✅ 정상 (2026-09-08 해결됨) — `home.js`/`board.js`가 이제 `role === 'staff'` 분기 추가, staff 로그인 시 이 두 화면으로 안내됨. `board.js` 주석에 "staff는 `board:write`/`board:read` 권한이 없어 문의 작성·상세보기는 못 쓴다"고 명시 — 실제 DB 권한(아래 7번 표)과 일치 |
 
-**요약** (2026-09-09 재갱신): 화면 있는 기능이 9개(게시판·OCR·진료기록조회·챗봇·예약·휴진일관리·문의답변·예약관리·계정관리)로 늘었고, **staff 전용 화면도 생겨서 더 이상 UI에서 사라진 역할이 아니다.** 이제 API만 있고 화면이 없는 건 **감사로그(audit-log) 하나뿐**이다 (위 표 참고). 랜딩 페이지(`index.html`)에도 "내 진료기록" 링크가 실제로 클릭 가능하게 추가됨(이전엔 소개 문구만 있고 링크가 없었음).
+**요약** (2026-09-09 재갱신, 표 갱신 2026-09-15): 화면 있는 기능이 9개(게시판·OCR·진료기록조회·챗봇·예약·휴진일관리·문의답변·예약관리·계정관리)로 늘었고, **staff 전용 화면도 생겨서 더 이상 UI에서 사라진 역할이 아니다.** 랜딩 페이지(`index.html`)에도 "내 진료기록" 링크가 실제로 클릭 가능하게 추가됨(이전엔 소개 문구만 있고 링크가 없었음). **[2026-09-15 갱신]** "API만 있고 화면이 없다"던 감사로그(audit-log)도 2026-09-11에 팀원이 `admin-audit-dashboard.html`을 추가해서 해소됨(위 표 참고) — 이제 API만 있고 화면이 없는 기능은 없다.
 
 ---
 
@@ -328,6 +328,31 @@ bash stop.sh && bash start.sh   # 재시작
 - **검증**: `node --check`, CSS 중괄호 짝, HTML `<div>` 태그 짝 확인.
 
 ---
+
+### 2026-09-14 — 이름 마스킹 오탐(과잉/과소) 정규식 수정 + spaCy NER 활성화·`sm`→`md` 교체 (`feature/ocr`)
+- **문제 1(과잉)**: "저는/제 이름은 + N글자"면 무조건 이름으로 취급하던 정규식이 "저는 아파요", "저는 관리자입니다", 챗봇 거절문의 "저는 미소병원 안내 챗봇입니다"까지 이름으로 오인해 마스킹함(실제 대시보드에서 "미**원"으로 관측). **수정**: 실제 한국 성씨 화이트리스트(`KOREAN_SURNAMES`) 도입 — 후보 단어의 첫 글자가 성씨가 아니면 이름으로 안 봄(커밋 `b1cfaa4`).
+- **문제 2(과소)**: 트리거 단어 없이 등장하는 이름("홍길동인데 예약 확인해줘")을 잡는 2차 안전망(spaCy 한국어 NER)이, 모델 자체가 미설치라 `OSError`로 경고 로그 한 줄 없이 조용히 꺼져있었음(`BUG_REVIEW_2026-09-10.md`에서 발견). **수정**: 모델 설치 + 미설치 시 경고 로그 + `start.sh` 설치 자동화.
+- **2차 문제 발견·해결**: 이 서버에서 NER을 처음 켜자마자 `ko_core_news_sm`(small)이 트리거 없는 일반 명사구까지 PERSON으로 오분류 — "미소병원의"/"김치찌개"/`sender` 필드 값 "bot" 등이 새로 오탐됨(재스캔 발견 건수 `chatbot_sqlite` 7→26건, `mysql_chat` 2→63건으로 급증). sm/md 직접 비교 실측 후 `ko_core_news_md`(medium)를 주 모델로(미설치 시 sm 폴백) 교체.
+- **검증**: 재스캔 발견 건수 26→11건/63→5건으로 감소, 회귀 테스트 14개 전부 통과. **잔여 한계**: "김치"처럼 흔한 성씨(김)로 시작하는 일반 단어는 md에서도 여전히 오탐 가능(완전한 성씨 목록이 아닌 구조적 한계). **신규 미해결**: "저는 서울에 살아요" 같은 트리거+장소조사 조합은 별개 정규식 경로라 sm→md 교체와 무관하게 여전히 오탐(2026-09-14/15 발견, 미수정) — 상세는 `BUG_REVIEW_2026-09-10.md` 참고.
+
+### 2026-09-14 — 관리자 로그인 이상탐지 대소문자 우회 + 100KB 초과 페이로드 미탐 수정 (`feature/ocr`)
+- **문제 1**: MySQL 기본 콜레이션이 대소문자를 구분 안 해서 `admin`/`Admin`/`ADMIN`이 실제로는 같은 계정으로 로그인되는데, 반복실패·신규IP·신규지역 탐지용 Map 3개(`failuresByUsername` 등)는 JS Map이라 대소문자를 다른 키로 취급 — 케이스만 바꿔가며 시도하면 반복실패 탐지가 영구히 안 뜨고, TOTP 추가인증까지 건너뛸 수 있었음(단순 미탐을 넘어 인증 우회로 이어질 수 있는 문제). **수정**: `normalizeUsernameKey()`(소문자 정규화)로 3개 Map 키 통일, 감사 로그 표시값은 원문 유지.
+- **문제 2**: `express.json()`의 100KB 크기 제한을 넘는 요청은 라우트 핸들러 진입 전에 에러가 나서, 기존 전역 에러 핸들러가 "500 + 로그 없음"으로 뭉뚱그림 — 200자 기준 "긴 입력값" 탐지보다 훨씬 큰 페이로드가 오히려 감사 로그에 안 남는 역설적 사각지대였음. **수정**: `entity.too.large` 에러를 구분해 신규 이벤트(`oversized_request_payload`, medium)로 기록 + 응답도 413으로 정정.
+- **검증**: `admin`→`Admin`→`ADMIN` 3연속 실패 재현 시 3번째 시도에서 정상 탐지 확인. 15만 자 페이로드 재현 시 413 + 감사 로그 정상 기록 확인. 상세는 `BUG_REVIEW_2026-09-10.md` 참고.
+
+### 2026-09-15 — 게시판 staff 권한 버그 + 비동기 라우트 무응답 문제 일괄 수정 (`feature/ocr`, 커밋 `ab4b268`)
+- **문제 1**: `board.js`의 `GET /:patientId`가 `board:read` 단일 권한만 검사하는데 staff는 `board:reply`만 있어서, "staff도 답변하려면 상세를 봐야 한다"는 의도로 넣어둔 예외 처리 코드에 staff가 미들웨어 단계에서 먼저 403을 맞아 영영 도달 못 하던 버그. **수정**: 이 라우트에서만 `board:read` 또는 `board:reply` 둘 중 하나면 통과하는 인라인 체크로 대체(다른 라우트 영향 없음).
+- **문제 2**: Express 4가 async 핸들러의 reject를 에러 미들웨어로 자동 전달 안 해서, try/catch 없는 라우트 15개 이상(records/reservations/patients/accounts/totp/chat/documents 일부/holidays/board/auditLog)에서 DB 에러 시 응답이 아예 안 가고 클라이언트가 무한정 기다리게 됨. **수정**: `was/middleware/asyncHandler.js` 신규 — `Promise.resolve(fn).catch(next)`로 감싸 전역 에러 핸들러까지 도달시킴.
+- **검증**: staff가 남의 문의 조회 → 200(수정 전 403), IDOR 방어 유지(타 patient → 403) 확인. `GET /api/audit-log?limit=-1` 재현 — 수정 전 5초+ 무응답, 수정 후 0.011초만에 500 응답, 나머지 13개 라우트도 정상 동작 확인.
+
+### 2026-09-15 — `audit_summary.py` 반복 재스캔 캐싱 + `GET /audit-summary`의 이벤트 루프 블로킹 버그 수정 (`feature/ocr`)
+- **문제 1**: `build_audit_summary()`가 호출마다 감사로그 3개 저장소(JSONL 전체+SQLite 전체+MySQL 전체)를 복호화·재스캔하는데, `admin-audit-dashboard.html`이 10초 자동 폴링 + 수동 새로고침으로 이걸 반복 호출해서 로그가 쌓일수록 점점 무거워지는 성능 문제(`BUG_REVIEW_2026-09-10.md`에서 발견). **수정**: 20초 TTL 인메모리 캐시 추가 — 반복 폴링 중 절반 이상은 재계산 없이 캐시 반환. 근본 해결(날짜 range 필터, KPI 의미가 "전체 이력"→"최근 N일"로 바뀜)은 제품 결정이 필요해 보류.
+- **문제 2**: `audit_summary_endpoint`가 `/chat`(2026-09-11에 이미 고친 것)과 정확히 같은 "async인 척하는 sync" 버그를 갖고 있었음 — `verify_internal_caller()`/`build_audit_summary()` 둘 다 완전히 동기 코드인데 `async def`라 이벤트 루프를 직접 막아서, 이 핸들러가 도는 동안 `/chat`을 포함한 서비스 전체가 멈췄음. `/chat` 수정 직후 바로 다음 커밋(`2a1a303`, 감사 대시보드 추가)에서 새로 만들어진 코드가 같은 실수를 반복한 것 — 2026-09-11 재점검 때 이 신규 엔드포인트를 서비스간 인증 패턴만 확인하고 이 블로킹 패턴은 체크리스트에 없어 놓쳤었음. **수정**: `/chat`과 동일하게 `async def` → `def` 한 단어만 변경.
+- **검증(A/B 비교)**: `/audit-summary`가 캐시 콜드 상태로 ~1.3초 계산하는 동안 완전히 무관한 `/docs` 요청을 동시에 쏴서 측정 — 수정 전(`async def`, 재현용으로 일시 되돌려서 테스트) 겹치는 시점의 요청이 **1.325초**(계산 시간과 거의 일치, 이벤트 루프가 그만큼 통째로 멈췄다는 뜻) 걸렸고, 수정 후엔 **0.0008초**로 전혀 영향 없음 확인. 다른 4개 요청(계산 종료 후 도착)은 수정 전/후 둘 다 0.0005~0.0008초로 동일.
+
+### 2026-09-15 — 전체 프로젝트 버그 재점검 + `BUG_REVIEW_2026-09-10.md` 사본 통합
+- **재점검**: 09-10/09-11과 같은 방식(프론트/`was`/`chatbot-service` 3영역 병렬 에이전트, 리뷰 전용)으로 다시 전수 검토 — 새로 High 3건(챗봇 서비스: 위 `/audit-summary` 블로킹, 감사로그 해시체인 락 없음, `tools_db.py` 커넥션 누수), Medium 7건, Low 8건 발견. 전부 아직 미수정(이번 세션에서 고친 건 위 두 항목뿐) — 상세는 `BUG_REVIEW_2026-09-10.md` 참고.
+- **문서 정리**: `BUG_REVIEW_2026-09-10.md`가 데스크탑(`~/Desktop/`)과 이 프로젝트 폴더 두 곳에서 서로 다른 세션에 의해 독립적으로 갱신되고 있던 게 확인돼(각자 09-11 이후 서로 모르는 항목을 갖고 있었음) 데스크탑 사본으로 통합, 프로젝트 폴더 사본은 `git rm`으로 제거(커밋 `aec231a`). 앞으로 `BUG_REVIEW_2026-09-10.md`는 `~/Desktop/BUG_REVIEW_2026-09-10.md` 하나만 존재(레포 밖, untracked) — 이 프로젝트의 `.md` 파일은 전부 `main`에 안 올리고 `feature/ocr`에만 올리는 규칙으로 일반화됨.
 
 ## 7. RBAC (자세한 설계는 [RBAC-Plan.md](RBAC-Plan.md) 참고)
 
